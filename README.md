@@ -6,7 +6,7 @@ Browser-signing upload / download site for the [VaultChain](https://github.com/V
 
 Everything cryptographic happens in the browser: key generation, transaction signing, chunking and Merkle roots, optional encryption, read-token signing and decryption. The node and the storage provider only receive signed transactions, (cipher)text chunks and signed read tokens. There are no server-side secrets.
 
-Related repositories: [vaultchain](https://github.com/VaultChainHQ/vaultchain) (the chain, provider and CLI) · [vaultchain-explorer](https://github.com/VaultChainHQ/vaultchain-explorer) (read-only explorer) · **vaultchain-upload** (this repo).
+Related repositories: [vaultchain](https://github.com/VaultChainHQ/vaultchain) (the chain, provider and CLI) · [vaultchain-explorer](https://github.com/VaultChainHQ/vaultchain-explorer) (read-only explorer) · **vaultchain-upload** (this repo). Also: [vaultchain-web](https://github.com/VaultChainHQ/vaultchain-web) (site, docs hub and a profile vault that encrypts keys with a passphrase, unlike the plain-hex storage here).
 
 ## What is implemented
 

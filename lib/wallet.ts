@@ -1,8 +1,8 @@
-// Browser key storage. Keys never leave this device: they live in localStorage as plain hex
-// (NOT encrypted with a passphrase). Anyone with access to this browser profile, or any script
-// running on this origin, can read them. Devnet only.
-import { useSyncExternalStore } from "react";
-import { generateKey, keyFromHex, type KeyPair } from "./vault/keys";
+// The OLD key storage of this site: plain hex keys in localStorage under `vaultchain-upload:keys:v1`.
+// It is no longer written. It is only read so people who used the earlier version can move their
+// accounts into the passphrase-encrypted vault (see components/Migrate.tsx) and then delete the
+// plain copies.
+import { keyFromHex, type KeyPair } from "./vault/keys";
 
 export const STORAGE_KEY = "vaultchain-upload:keys:v1";
 
@@ -33,62 +33,41 @@ export function parseWallet(raw: string | null): WalletState {
   }
 }
 
-let cacheRaw: string | null | undefined;
-let cacheState: WalletState = EMPTY;
-const listeners = new Set<() => void>();
+export interface LegacyAccount {
+  name: string;
+  privHex: string;
+  address: string;
+}
 
-function snapshot(): WalletState {
-  const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY);
-  if (raw !== cacheRaw) {
-    cacheRaw = raw;
-    cacheState = parseWallet(raw);
+/** Plain keys found in this browser that are not yet in the vault (by address). Keys that fail validation are skipped. */
+export function legacyAccounts(raw: string | null, alreadyInVault: ReadonlySet<string> = new Set()): LegacyAccount[] {
+  const out: LegacyAccount[] = [];
+  for (const k of parseWallet(raw).keys) {
+    let kp: KeyPair;
+    try {
+      kp = keyFromHex(k.privHex);
+    } catch {
+      continue;
+    }
+    if (alreadyInVault.has(kp.address) || out.some((o) => o.address === kp.address)) continue;
+    out.push({ name: k.name, privHex: kp.privHex, address: kp.address });
   }
-  return cacheState;
+  return out;
 }
 
-function save(s: WalletState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  listeners.forEach((l) => l());
+export function readLegacyRaw(): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
-function subscribe(cb: () => void) {
-  listeners.add(cb);
-  window.addEventListener("storage", cb);
-  return () => {
-    listeners.delete(cb);
-    window.removeEventListener("storage", cb);
-  };
-}
-
-export function addKey(name: string, privHex: string): KeyPair {
-  const kp = keyFromHex(privHex); // validates
-  const s = snapshot();
-  if (s.keys.some((k) => k.privHex === kp.privHex)) throw new Error("this key is already in the wallet");
-  save({ keys: [...s.keys, { name: name.trim() || `account ${s.keys.length + 1}`, privHex: kp.privHex }], active: s.keys.length });
-  return kp;
-}
-
-export function createKey(name: string): KeyPair {
-  const kp = generateKey();
-  addKey(name, kp.privHex);
-  return kp;
-}
-
-export function selectKey(i: number) {
-  const s = snapshot();
-  if (i >= 0 && i < s.keys.length) save({ ...s, active: i });
-}
-
-export function forgetKey(i: number) {
-  const s = snapshot();
-  const keys = s.keys.filter((_, j) => j !== i);
-  save({ keys, active: keys.length ? Math.min(s.active, keys.length - 1) : -1 });
-}
-
-export function useWallet(): WalletState {
-  return useSyncExternalStore(subscribe, snapshot, () => EMPTY);
-}
-
-export function activeKeyPair(w: WalletState): KeyPair | null {
-  return w.active >= 0 ? keyFromHex(w.keys[w.active].privHex) : null;
+/** Deletes the plain copy. Call only after every account has been sealed into the vault, or the user chose to discard it. */
+export function clearLegacy(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* storage blocked: nothing to clear */
+  }
 }

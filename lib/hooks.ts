@@ -1,49 +1,109 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { errMsg } from "./errors";
+import { session, type Unlocked } from "./session";
 import { NodeClient, ProviderClient } from "./vault/client";
 import { NODE_URL, PROVIDER_MODE, PROVIDER_URL } from "./vault/config";
+import { EMPTY_VAULT, vaultStore, type ProfileRecord, type VaultData } from "./vaultstore";
 
 export const node = new NodeClient(NODE_URL);
 export const provider = new ProviderClient(PROVIDER_URL, PROVIDER_MODE);
 
-export function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+export function useVault(): VaultData {
+  const s = vaultStore();
+  return useSyncExternalStore(s.subscribe, s.snapshot, () => EMPTY_VAULT);
 }
 
-/** Runs `fn` now and every `ms`, and again whenever `tick` changes. Returns the latest result. */
-export function usePoll<T>(fn: () => Promise<T>, ms: number, tick: unknown = 0): { data: T | undefined; error: string | undefined; reload: () => void } {
-  const [data, setData] = useState<T>();
-  const [error, setError] = useState<string>();
-  const [n, setN] = useState(0);
+export function useUnlocked(): Unlocked | null {
+  const s = session();
+  return useSyncExternalStore(s.subscribe, s.snapshot, () => null);
+}
+
+export function activeProfile(v: VaultData): ProfileRecord | undefined {
+  return v.profiles.find((p) => p.entry.id === v.activeId);
+}
+
+const noop = () => () => {};
+/** False during server rendering and the first client render, true afterwards (avoids hydration mismatches for localStorage-backed UI). */
+export function useMounted(): boolean {
+  return useSyncExternalStore(noop, () => true, () => false);
+}
+
+/** The unlocked session, but only when it belongs to the active profile. */
+export function useAccount(): { vault: VaultData; profile: ProfileRecord | undefined; unlocked: Unlocked | null; mounted: boolean } {
+  const vault = useVault();
+  const u = useUnlocked();
+  const mounted = useMounted();
+  const profile = activeProfile(vault);
+  return { vault, profile, unlocked: u && profile && u.profileId === profile.entry.id ? u : null, mounted };
+}
+
+export interface Polled<T> {
+  data: T | undefined;
+  error: string | null;
+  loading: boolean;
+  reload: () => void;
+  /** Milliseconds since the last successful load. */
+  updatedAt: number | undefined;
+}
+
+/** Poll an async function. `key` identifies the query: change it to refetch immediately. Polling pauses while the tab is hidden. */
+export function usePoll<T>(key: string, fn: () => Promise<T>, ms = 0): Polled<T> {
   const fnRef = useRef(fn);
   useEffect(() => {
     fnRef.current = fn;
   });
+  const [state, setState] = useState<{ key: string; data?: T; error: string | null; at?: number }>({ key, error: null });
+  const [tick, setTick] = useState(0);
+
   useEffect(() => {
-    let alive = true;
-    const run = async () => {
+    let dead = false;
+    async function run() {
       try {
-        const v = await fnRef.current();
-        if (alive) {
-          setData(v);
-          setError(undefined);
-        }
+        const d = await fnRef.current();
+        if (!dead) setState({ key, data: d, error: null, at: Date.now() });
       } catch (e) {
-        if (alive) setError(errMsg(e));
+        if (!dead) setState((s) => ({ key, data: s.key === key ? s.data : undefined, error: errMsg(e), at: s.key === key ? s.at : undefined }));
       }
-    };
+    }
     void run();
-    const t = ms > 0 ? setInterval(run, ms) : undefined;
+    const t =
+      ms > 0
+        ? setInterval(() => {
+            if (document.visibilityState === "visible") void run();
+          }, ms)
+        : undefined;
     return () => {
-      alive = false;
+      dead = true;
       if (t) clearInterval(t);
     };
-  }, [ms, tick, n]);
-  return { data, error, reload: () => setN((x) => x + 1) };
+  }, [key, ms, tick]);
+
+  const current = state.key === key;
+  const reload = useCallback(() => setTick((n) => n + 1), []);
+  return {
+    data: current ? state.data : undefined,
+    error: current ? state.error : null,
+    loading: !current || (state.data === undefined && state.error === null),
+    reload,
+    updatedAt: current ? state.at : undefined,
+  };
 }
 
-export function saveBytes(data: Uint8Array, name: string, mime: string) {
-  const blob = new Blob([data as BlobPart], { type: mime || "application/octet-stream" });
+/** Re-renders every `ms` while `active`. */
+export function useNow(active = true, ms = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [active, ms]);
+  return now;
+}
+
+/** Hands bytes to the browser as a download. The file is never rendered inline, so a hostile file cannot run script on this origin. */
+export function saveBytes(data: Uint8Array, name: string, mime = "application/octet-stream") {
+  const blob = new Blob([data as BlobPart], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -54,24 +114,35 @@ export function saveBytes(data: Uint8Array, name: string, mime: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export function fmtVault(uvault: bigint): string {
-  const whole = uvault / 1_000_000n;
-  const frac = (uvault % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
-  return frac ? `${whole}.${frac}` : `${whole}`;
+export function saveText(text: string, name: string) {
+  saveBytes(new TextEncoder().encode(text), name, "application/json");
 }
 
-export function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const u = ["KiB", "MiB", "GiB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 ? 2 : 1)} ${u[i]}`;
-}
+export { errMsg };
 
-export function short(s: string, n = 8): string {
-  return s.length > 2 * n + 1 ? `${s.slice(0, n)}…${s.slice(-n)}` : s;
+const lastBalance = new Map<string, bigint>();
+
+/** The balance in uvault of an address (undefined until the first answer), refreshed every few seconds. Every copy on the page refreshes when any one sees a change. */
+export function useBalance(address: string | undefined, ms = 6000): Polled<bigint> {
+  const q = usePoll(
+    `bal:${address ?? ""}`,
+    async () => {
+      if (!address) return 0n;
+      const b = await node.balance(address, "uvault");
+      const prev = lastBalance.get(address);
+      lastBalance.set(address, b);
+      if (prev !== undefined && prev !== b && typeof window !== "undefined") window.dispatchEvent(new CustomEvent("vc:balance", { detail: address }));
+      return b;
+    },
+    address ? ms : 0,
+  );
+  const { reload } = q;
+  useEffect(() => {
+    const on = (e: Event) => {
+      if ((e as CustomEvent).detail === address) reload();
+    };
+    window.addEventListener("vc:balance", on);
+    return () => window.removeEventListener("vc:balance", on);
+  }, [address, reload]);
+  return q;
 }

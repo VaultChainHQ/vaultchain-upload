@@ -1,3 +1,4 @@
+// Ported from VaultChainHQ/vaultchain-web (MIT). Keep in sync with the Go implementation: see test/vectors.
 // High-level flows (upload, download, grant, revoke). Everything that touches a
 // private key happens here, in the browser; the network only ever sees signed
 // transactions, read tokens and (cipher)text chunks.
@@ -37,6 +38,15 @@ export async function submitMsgs(node: NodeClient, signer: Signer, msgs: VaultMs
   const rec = await node.waitTx(hash);
   if (!rec.ok) throw new Error(`transaction failed: ${rec.result}`);
   return rec;
+}
+
+/**
+ * Make this account's public key known on chain by signing the smallest possible transaction: a
+ * 1 uvault transfer to itself (the fee is the only real cost). Others need the key to encrypt a
+ * file key for you, and the chain learns it from the first tx an account signs.
+ */
+export async function announceKey(node: NodeClient, signer: Signer, progress?: Progress): Promise<TxRecord> {
+  return submitMsgs(node, signer, [{ type: "bank/Send", to: signer.key.address, amount: [{ denom: DENOM, amount: "1" }] }], progress);
 }
 
 async function pool<T>(count: number, concurrency: number, fn: (i: number) => Promise<T>): Promise<T[]> {

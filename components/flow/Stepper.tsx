@@ -22,13 +22,13 @@ export function Stepper({ state, env, onGo }: { state: FlowState; env: FlowEnv; 
                 aria-current={st === "current" ? "step" : undefined}
                 disabled={st === "locked" || (lockedWhileRunning && st !== "current")}
                 title={why ?? undefined}
+                aria-label={`${i + 1}. ${s.label}${st === "done" ? " (completed)" : st === "locked" ? ` (not available yet${why ? `: ${why}` : ""})` : ""}`}
                 onClick={() => onGo(s.id)}
               >
                 <span className="step-n" aria-hidden="true">
                   {st === "done" ? "✓" : i + 1}
                 </span>
                 <span className="step-l">{s.label}</span>
-                <span className="sr-only">{st === "done" ? " (completed)" : st === "locked" ? ` (not available yet${why ? `: ${why}` : ""})` : ""}</span>
               </button>
             </li>
           );

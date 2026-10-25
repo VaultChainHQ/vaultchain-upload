@@ -1,5 +1,5 @@
 /* VaultChain Upload: layout and components on top of brand.css */
-.page { padding: 24px 0 24px; min-height: 60vh; }
+.page { padding: 24px 0 24px; min-height: 85vh; }
 .page h1 { margin-bottom: .3em; }
 .wrap-any { overflow-wrap: anywhere; word-break: break-word; }
 .stack { display: grid; gap: 16px; }

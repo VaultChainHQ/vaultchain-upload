@@ -187,7 +187,7 @@ export function batchFraction(items: FileItem[]): number {
 }
 
 export interface UploadDeps {
-  upload: (o: { file: File; name: string; mime: string; encrypt: boolean; durationBlocks: number; progress: (step: string, fraction?: number) => void }) => Promise<UploadResult>;
+  upload: (o: { id: string; file: File; name: string; mime: string; encrypt: boolean; durationBlocks: number; progress: (step: string, fraction?: number) => void }) => Promise<UploadResult>;
   explain: (e: unknown) => { title: string; hint?: string; detail: string; retryable: boolean };
 }
 
@@ -204,6 +204,7 @@ export async function runQueue(store: FlowStore, deps: UploadDeps): Promise<void
     let stage: Stage | undefined;
     try {
       const result = await deps.upload({
+        id: it.id,
         file: it.file,
         name: it.file.name,
         mime: it.file.type || "application/octet-stream",

@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import type { Unlocked } from "@/lib/session";
-import { downloadObject } from "@/lib/vault/flows";
+import { downloadBlob } from "@/lib/vault/flows";
 import { friendlyError } from "@/lib/errors";
-import { node, provider, saveBytes } from "@/lib/hooks";
+import { node, provider, saveBlob } from "@/lib/hooks";
 import { previewKind } from "@/lib/library";
 import { toast } from "@/lib/toast";
 import { Preview } from "../Preview";
@@ -13,11 +13,10 @@ import type { ProfileRecord } from "@/lib/vaultstore";
 import { UnlockPanel } from "../unlock";
 
 interface Fetched {
-  data: Uint8Array;
+  blob: Blob;
   name: string;
   mime: string;
   decrypted: boolean;
-  blob?: Blob;
 }
 
 /** Download (and optionally preview) one file. Everything is verified against the on-chain root, and decrypted in the browser. */
@@ -37,8 +36,8 @@ export function FileActions({ root, unlocked, name, mime, size, profile }: { roo
     }
     setError(null);
     try {
-      const r = await downloadObject({ node, provider, signer: { key: unlocked.key, priv: unlocked.priv }, root, progress: (s, f) => (setStep(s), setFrac(f)) });
-      return { data: r.data, name: r.name || name || "download.bin", mime: r.mime || mime || "application/octet-stream", decrypted: r.decrypted };
+      const r = await downloadBlob({ node, provider, signer: { key: unlocked.key, priv: unlocked.priv }, root, progress: (s, f) => (setStep(s), setFrac(f)) });
+      return { blob: r.blob, name: r.name || name || "download.bin", mime: r.mime || mime || "application/octet-stream", decrypted: r.decrypted };
     } catch (e) {
       setError(friendlyError(e));
       return null;
@@ -49,7 +48,7 @@ export function FileActions({ root, unlocked, name, mime, size, profile }: { roo
     setBusy("download");
     const r = fetched ?? (await fetchIt());
     if (r) {
-      saveBytes(r.data, r.name, "application/octet-stream");
+      saveBlob(r.blob, r.name);
       toast(`Saved “${r.name}”.${r.decrypted ? " It was decrypted on this device." : ""}`, "good");
     }
     setBusy(null);
@@ -61,7 +60,7 @@ export function FileActions({ root, unlocked, name, mime, size, profile }: { roo
     if (fetched) return setFetched(null);
     setBusy("preview");
     const r = await fetchIt();
-    if (r) setFetched({ ...r, blob: new Blob([r.data as BlobPart]) });
+    if (r) setFetched(r);
     setBusy(null);
     setStep("");
     setFrac(undefined);
@@ -99,7 +98,7 @@ export function FileActions({ root, unlocked, name, mime, size, profile }: { roo
       {showUnlock && !unlocked ? <UnlockPanel profile={profile} /> : null}
       {fetched && kind ? (
         <div className="file-preview">
-          <Preview blob={fetched.blob!} name={fetched.name} kind={kind} mime={mime ?? fetched.mime} />
+          <Preview blob={fetched.blob} name={fetched.name} kind={kind} mime={mime ?? fetched.mime} />
         </div>
       ) : null}
     </div>

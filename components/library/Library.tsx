@@ -106,7 +106,7 @@ function MyFiles({ profile, unlocked, openRoot }: { profile: ProfileRecord; unlo
           ) : (
             <ul className="files">
               {shown.map((r) => (
-                <FileRow key={r.rec.root} rec={r.rec} deals={q.data!.deals.filter((d) => d.cid === r.rec.root)} height={q.data!.height} profile={profile} unlocked={unlocked} opened={r.rec.root === openRoot} />
+                <FileRow key={r.rec.root} rec={r.rec} deals={q.data!.deals.filter((d) => d.cid === r.rec.root)} height={q.data!.height} profile={profile} unlocked={unlocked} opened={r.rec.root === openRoot} onChanged={q.reload} />
               ))}
             </ul>
           )}

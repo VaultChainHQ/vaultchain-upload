@@ -16,10 +16,14 @@ export const TXS_PER_UPLOAD = 2n;
 export const PRICE_BLOCK_UNIT = 1000;
 /** Fallback if the node's pricing cannot be read: 1 VAULT per GiB per 1,000 blocks (the devnet default). */
 export const FALLBACK_PRICE_PER_GB = 1_000_000n;
-/** Per-file cap: the whole file and its ciphertext are held in browser memory while uploading. */
-export const MAX_FILE_BYTES = 64 * 1024 * 1024;
-/** Per-batch cap, a gentle guard against a tab running out of memory. */
-export const MAX_BATCH_BYTES = 256 * 1024 * 1024;
+/**
+ * Per-file cap. Files are read in slices and kept as chunks in the browser's IndexedDB, so memory is not the limit any more.
+ * The real ceilings are the chain (max_object_bytes = 4 GiB), the storage provider (700 MB of capacity on this devnet, shared by everyone;
+ * the upload engine also checks its free space before paying) and how long you want to wait and how much disk the browser grants.
+ */
+export const MAX_FILE_BYTES = 256 * 1024 * 1024;
+/** Per-batch cap: files go one after another, so this only bounds the total time and provider space one batch can take. */
+export const MAX_BATCH_BYTES = 512 * 1024 * 1024;
 export const MAX_FILES = 20;
 
 export interface DurationChoice {
@@ -116,7 +120,7 @@ export function validateFiles(
       return void issues.push({
         name: f.name,
         reason: "too-large",
-        message: `“${f.name}” is ${fmtMB(f.size)}. This site holds a whole file in your browser's memory, so each file is limited to ${fmtMB(MAX_FILE_BYTES)}. The command line tool handles larger files.`,
+        message: `“${f.name}” is ${fmtMB(f.size)}. Each file here is limited to ${fmtMB(MAX_FILE_BYTES)} (the devnet storage provider has limited space). The command line tool can store larger files.`,
       });
     if (count >= MAX_FILES) return void issues.push({ name: f.name, reason: "too-large", message: `Only ${MAX_FILES} files per upload. “${f.name}” was not added.` });
     if (bytes + f.size > MAX_BATCH_BYTES)

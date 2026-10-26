@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { STEPS, blockedReason, flowStore, initialStep, stepIndex, type FlowEnv, type StepId } from "@/lib/flow";
 import { useAccount, useBalance } from "@/lib/hooks";
+import { ResumeBanner } from "./ResumeBanner";
 import { Stepper } from "./Stepper";
 import { useFlow } from "./useFlow";
 import { ProfileStep } from "./ProfileStep";
@@ -72,6 +73,7 @@ export function Flow() {
 
   return (
     <div className="flow">
+      <ResumeBanner />
       <Stepper state={state} env={env} onGo={go} />
       <section className="panel" aria-labelledby="step-h">
         <h2 id="step-h" ref={heading} tabIndex={-1}>

@@ -2,53 +2,83 @@
 import { fmtDuration } from "./format";
 import type { Deal, ManifestRecord } from "./vault/client";
 
-export type Level = "ok" | "warn" | "bad" | "idle";
+export type Level = "ok" | "warn" | "bad" | "idle" | "info";
 export interface FileHealth {
   level: Level;
   label: string;
   why: string;
   /** Blocks until the storage term ends, when a deal is running. */
   blocksLeft?: number;
+  /** True only when the file is really at risk: failed, never stored, or about to lapse (or already lapsed) with nothing renewing it. */
+  attention: boolean;
 }
 
 const RANK: Record<string, number> = { open: 4, pending: 3, closed: 2, failed: 1, cancelled: 0 };
 
-/** The deal that best describes a file's state: a running deal beats a finished one, newer beats older. */
+/**
+ * The deal that best describes a file's state: a running deal beats a finished one. Among running deals the one that lasts longest wins,
+ * so a file that was renewed (a second deal that ends later) is judged by the renewal, not by the first deal that is about to end.
+ */
 export function bestDeal(deals: Deal[]): Deal | undefined {
-  return [...deals].sort((a, b) => (RANK[b.status] ?? -1) - (RANK[a.status] ?? -1) || b.id - a.id)[0];
+  return [...deals].sort((a, b) => {
+    const r = (RANK[b.status] ?? -1) - (RANK[a.status] ?? -1);
+    if (r) return r;
+    if (a.status === "open" || a.status === "pending") return b.expire_height - a.expire_height || b.id - a.id;
+    return b.id - a.id;
+  })[0];
 }
 
 /** Within this many blocks of the end (about 50 minutes) a running deal is flagged as ending soon. */
 export const ENDING_SOON_BLOCKS = 1000;
 
+/** A deal that paid for at most this many blocks (about 4 hours) is a quick test, not a real storage term. */
+export const SHORT_TERM_BLOCKS = 5000;
+
+export const isShortTerm = (d: Pick<Deal, "start_height" | "expire_height">): boolean => d.expire_height - d.start_height <= SHORT_TERM_BLOCKS;
+
 export function fileHealth(deals: Deal[], height: number | undefined): FileHealth {
   const d = bestDeal(deals);
-  if (!d) return { level: "bad", label: "Not stored", why: "The file is recorded on the chain but no storage deal exists, so nobody is paid to keep it. Upload it again to open a deal." };
+  if (!d)
+    return { level: "bad", attention: true, label: "Not stored", why: "The file is recorded on the chain but no storage deal exists, so nobody is paid to keep it. Upload it again to open a deal." };
   const left = height !== undefined ? d.expire_height - height : undefined;
+  const short = isShortTerm(d);
   switch (d.status) {
     case "pending":
-      return { level: "warn", label: "Starting", why: "The deal is open and a provider is being chosen. This usually takes a few blocks.", blocksLeft: left };
+      return { level: "warn", attention: false, label: "Starting", why: "The deal is open and a provider is being chosen. This usually takes a few blocks.", blocksLeft: left };
     case "open": {
       const active = d.replicas.filter((r) => r.status === "active").length;
-      if (!active) return { level: "warn", label: "Waiting for provider", why: "A provider has been picked but has not confirmed it holds the file yet.", blocksLeft: left };
-      if (left !== undefined && left <= 0) return { level: "warn", label: "Ending now", why: "The storage term is ending.", blocksLeft: left };
+      if (!active) return { level: "warn", attention: false, label: "Waiting for provider", why: "A provider has been picked but has not confirmed it holds the file yet.", blocksLeft: left };
+      if (short)
+        return {
+          level: "info",
+          attention: false,
+          label: "Short test duration",
+          why:
+            left !== undefined && left > 0
+              ? `A provider holds it. You chose a short storage term (${fmtDuration(d.expire_height - d.start_height)}), so it ends in ${fmtDuration(left)}. That is fine for a test, nothing is wrong. Choose a longer term to keep files.`
+              : "You chose a short storage term and it is ending. That is fine for a test, nothing is wrong. Choose a longer term to keep files.",
+          blocksLeft: left,
+        };
+      if (left !== undefined && left <= 0) return { level: "warn", attention: true, label: "Ending now", why: "The storage term is ending and nothing renews it. Upload the file again to keep it.", blocksLeft: left };
       if (left !== undefined && left <= ENDING_SOON_BLOCKS)
-        return { level: "warn", label: "Ends soon", why: `A provider holds it, but the paid storage ends in ${fmtDuration(left)}. Upload it again to extend it.`, blocksLeft: left };
+        return { level: "warn", attention: true, label: "Ends soon", why: `A provider holds it, but the paid storage ends in ${fmtDuration(left)} and no renewal is running. Upload it again to extend it.`, blocksLeft: left };
       return {
         level: "ok",
+        attention: false,
         label: "Stored",
         why: left !== undefined ? `A provider holds the file and is proving it. Paid storage runs for ${fmtDuration(left)} more.` : "A provider holds the file and is proving it.",
         blocksLeft: left,
       };
     }
     case "closed":
-      return { level: "idle", label: "Storage ended", why: "The paid storage term finished. The file may no longer be available. Upload it again to store it for longer." };
+      if (short) return { level: "idle", attention: false, label: "Test storage ended", why: "The short storage term you chose has finished, as expected. The file may no longer be available. Upload it again if you still need it." };
+      return { level: "idle", attention: true, label: "Storage ended", why: "The paid storage term finished and nothing renewed it. The file may no longer be available. Upload it again to store it for longer." };
     case "failed":
-      return { level: "bad", label: "Failed", why: "The term ended and no provider proved it stored the file." };
+      return { level: "bad", attention: true, label: "Failed", why: "The term ended and no provider proved it stored the file." };
     case "cancelled":
-      return { level: "idle", label: "Cancelled", why: "This deal was cancelled before it finished." };
+      return { level: "idle", attention: false, label: "Cancelled", why: "This deal was cancelled before it finished." };
     default:
-      return { level: "idle", label: d.status, why: "Status reported by the chain." };
+      return { level: "idle", attention: false, label: d.status, why: "Status reported by the chain." };
   }
 }
 
@@ -63,7 +93,7 @@ export interface LibRow {
 export const isEncrypted = (rec: Pick<ManifestRecord, "encryption">): boolean => !!rec.encryption;
 
 export function needsAttention(h: FileHealth): boolean {
-  return h.level === "bad" || h.level === "warn" || h.label === "Storage ended";
+  return h.attention;
 }
 
 export function filterRows(rows: LibRow[], o: { q?: string; filter?: LibFilter; sort?: LibSort }): LibRow[] {

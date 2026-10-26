@@ -33,7 +33,10 @@ Audited on 25 Oct 2026 (America/New_York), before and after the redesign. Screen
 
 * **Faucet from the browser, not proxied.** A proxy would make every visitor share the proxy's IP in the faucet's limiter. The faucet allows only this site's origin by default (`FAUCET_ALLOWED_ORIGINS` on the web project).
 * **Copies is not offered.** There is one provider and replication is fixed at 1. The UI says so rather than showing a control that does nothing.
-* **Per-file limit is 64 MiB** because the whole file and its ciphertext sit in browser memory. The CLI handles more.
+* **Per-file limit is 256 MiB (batch 512 MiB).** Files stream through the browser in slices, so memory is not the limit. The chain allows 4 GiB per object, but the one devnet provider has about 700 MB of capacity shared by everyone, so a bigger cap would mostly produce "provider full" errors. The engine checks the provider's free space before it pays for anything.
+* **Private chunks are staged encrypted in IndexedDB.** A fresh upload picks a new random file key, so re-encrypting after a reload would give a different file ID and force a second payment. Storing the ciphertext lets a resume continue the same upload. Only the sealed key envelope (openable with the profile's key) is persisted, never the file key.
+* **A short term is 5,000 blocks (about 4 hours) or less.** It is shown as the neutral "Short test duration" and is not a problem. Only failed proofs, a file with no deal, or a long-term file that is lapsing with nothing renewing it count as "needs attention".
+* **Extend opens a new deal.** The chain has no way to change a deal's end date, so "Extend storage" pays for one more deal on the same file ID with the same provider; the file is then judged by the deal that ends last.
 * **Public links open this app**, so a recipient needs a (free) profile. The page says so.
 * **Previews** use only an allow-list of media types as typed blobs, never HTML or SVG, and are capped (25 MiB, text 512 KiB).
 * **Devnet warnings stay visible** in the header badge and the footer, and in the Account page, without a banner on every screen.
@@ -52,5 +55,4 @@ Audited on 25 Oct 2026 (America/New_York), before and after the redesign. Screen
 ## Not done / known gaps
 
 * No Vercel firewall rate limit on `/api/faucet` yet (the in-memory limiter is per instance).
-* Short test durations show "Ends soon" and count as "needs attention".
-* Files above 64 MiB, folders and resumable uploads across a page reload are not supported.
+* Folders are not supported. A resumed upload still needs the profile to be unlocked again to sign, and browsers differ in how much IndexedDB space they grant. If it is full the upload stops with a clear message and nothing is lost.

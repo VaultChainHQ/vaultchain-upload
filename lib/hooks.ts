@@ -103,7 +103,11 @@ export function useNow(active = true, ms = 1000): number {
 
 /** Hands bytes to the browser as a download. The file is never rendered inline, so a hostile file cannot run script on this origin. */
 export function saveBytes(data: Uint8Array, name: string, mime = "application/octet-stream") {
-  const blob = new Blob([data as BlobPart], { type: mime });
+  saveBlob(new Blob([data as BlobPart]), name, mime);
+}
+
+export function saveBlob(source: Blob, name: string, mime = "application/octet-stream") {
+  const blob = source.type === mime ? source : source.slice(0, source.size, mime);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

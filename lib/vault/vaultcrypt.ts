@@ -56,6 +56,66 @@ export function encryptWithHeader(plain: Uint8Array, key: Uint8Array, header: Ui
   return concatBytes(...parts);
 }
 
+/** A fresh stream header (magic, segment size, random nonce prefix) for the streaming encryptor. */
+export function newHeader(segmentSize = DEFAULT_SEGMENT_SIZE): Uint8Array {
+  if (!Number.isInteger(segmentSize) || segmentSize <= 0 || segmentSize > MAX_SEGMENT_SIZE) throw new Error("vaultcrypt: bad segment size");
+  return concatBytes(MAGIC, u32be(segmentSize), randomBytes(PREFIX));
+}
+
+/** Seal one segment. `final` must be true for the last segment only. Concatenating header + all sealed segments equals encrypt(). */
+export function sealSegment(key: Uint8Array, header: Uint8Array, index: number, final: boolean, plain: Uint8Array): Uint8Array {
+  return xchacha20poly1305(key, segNonce(header.subarray(8, HEADER_SIZE), index), segAAD(header, final)).encrypt(plain);
+}
+
+/**
+ * Decrypts a stream of ciphertext pieces without holding the whole thing: `push` returns the plaintext of every
+ * segment that is certain not to be the last, and `finish` returns the final segment (and throws on truncation or tampering).
+ */
+export class StreamDecryptor {
+  private buf: Uint8Array = new Uint8Array(0);
+  private header?: Uint8Array;
+  private seg = 0;
+  private index = 0;
+  constructor(private key: Uint8Array) {
+    if (key.length !== KEY_SIZE) throw new Error("vaultcrypt: key must be 32 bytes");
+  }
+  private open(sealed: Uint8Array, final: boolean): Uint8Array {
+    try {
+      return xchacha20poly1305(this.key, segNonce(this.header!.subarray(8, HEADER_SIZE), this.index++), segAAD(this.header!, final)).decrypt(sealed);
+    } catch {
+      throw new Error("vaultcrypt: authentication failed (wrong key, or data corrupted or truncated)");
+    }
+  }
+  push(piece: Uint8Array): Uint8Array[] {
+    this.buf = this.buf.length === 0 ? piece : concatBytes(this.buf, piece);
+    if (!this.header) {
+      if (this.buf.length < HEADER_SIZE) return [];
+      const h = this.buf.slice(0, HEADER_SIZE);
+      if (!MAGIC.every((b, i) => h[i] === b)) throw new Error("vaultcrypt: not an encrypted stream (bad header)");
+      this.seg = new DataView(h.buffer, h.byteOffset, h.byteLength).getUint32(4, false);
+      if (this.seg <= 0 || this.seg > MAX_SEGMENT_SIZE) throw new Error("vaultcrypt: bad segment size in header");
+      this.header = h;
+      this.buf = this.buf.subarray(HEADER_SIZE);
+    }
+    const sealedMax = this.seg + TAG;
+    const out: Uint8Array[] = [];
+    let off = 0;
+    // Only open a segment while more bytes follow it: the last one must be opened with final=true.
+    while (this.buf.length - off > sealedMax) {
+      out.push(this.open(this.buf.subarray(off, off + sealedMax), false));
+      off += sealedMax;
+    }
+    this.buf = this.buf.subarray(off);
+    return out;
+  }
+  finish(): Uint8Array[] {
+    if (!this.header || this.buf.length < TAG) throw new Error("vaultcrypt: corrupt or truncated stream");
+    const out = [this.open(this.buf, true)];
+    this.buf = new Uint8Array(0);
+    return out;
+  }
+}
+
 export function decrypt(cipher: Uint8Array, key: Uint8Array): Uint8Array {
   if (key.length !== KEY_SIZE) throw new Error("vaultcrypt: key must be 32 bytes");
   if (cipher.length < HEADER_SIZE || !MAGIC.every((b, i) => cipher[i] === b)) {

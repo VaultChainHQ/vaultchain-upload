@@ -25,7 +25,10 @@ Related repositories: [vaultchain](https://github.com/VaultChainHQ/vaultchain) (
 | "Shared with me" list and download of files granted to you | done |
 | Sending VAULT (`bank/Send`) from the UI | not in the UI (the encoder exists in `lib/vault/msgs.ts`) |
 | Hardware wallets | not implemented |
-| Files larger than 64 MiB | not supported by this site (the chain allows more; the whole file is held in memory here) |
+| Large files | up to **256 MiB per file** (512 MiB per batch). Files are read in slices, encrypted in a stream and kept as chunks in IndexedDB, so memory use stays flat. The chain allows 4 GiB, but the devnet provider has about 700 MB in total, shared by everyone, and the engine checks its free space before paying |
+| Resumable uploads | done: the queue, progress and (for private files) the encrypted chunks live in IndexedDB. After a reload the page offers "Resume upload", which continues from the last chunk sent and never signs the same transaction twice. If the file could not be staged yet, you choose it again |
+| Extend storage | done: "Extend storage" in a file's details opens one more deal for the same file with the provider that already holds it (nothing is uploaded again) |
+| Short test terms | a term of 5,000 blocks (about 4 hours) or less shows a neutral "Short test duration" and is never counted as "needs attention" |
 | Public (`*`) grants on encrypted files | refused on purpose: a public grant cannot carry a key, so it would only expose ciphertext |
 | Faucet | the Funds step calls vaultchain-web's `/api/faucet` (100 VAULT, 24 h cooldown per address) |
 

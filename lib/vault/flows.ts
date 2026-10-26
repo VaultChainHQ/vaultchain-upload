@@ -3,14 +3,14 @@
 // private key happens here, in the browser; the network only ever sees signed
 // transactions, read tokens and (cipher)text chunks.
 import { bytesToHex, hexToBytes } from "./bytes";
-import { buildManifest, proofHeader, prove, safeMime, safeName, verifyContent, type Manifest } from "./chunk";
+import { buildManifest, contentRoot, hashLeaf, proofHeader, prove, safeMime, safeName, treeRoot, verifyContent, type Manifest } from "./chunk";
 import { HttpError, type Deal, type ManifestRecord, type NodeClient, type ProviderClient, type TxRecord } from "./client";
 import { DENOM } from "./config";
 import { isValidAddress, type KeyPair } from "./keys";
 import type { VaultMsg } from "./msgs";
 import { signReadToken } from "./readtoken";
 import { signTx } from "./tx";
-import { decrypt, encrypt, ENCRYPTION_V1, generateFileKey, openKey, sealKey } from "./vaultcrypt";
+import { decrypt, encrypt, ENCRYPTION_V1, generateFileKey, openKey, sealKey, StreamDecryptor } from "./vaultcrypt";
 
 export interface Signer {
   key: KeyPair;
@@ -49,7 +49,7 @@ export async function announceKey(node: NodeClient, signer: Signer, progress?: P
   return submitMsgs(node, signer, [{ type: "bank/Send", to: signer.key.address, amount: [{ denom: DENOM, amount: "1" }] }], progress);
 }
 
-async function pool<T>(count: number, concurrency: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+export async function pool<T>(count: number, concurrency: number, fn: (i: number) => Promise<T>): Promise<T[]> {
   const out = new Array<T>(count);
   let next = 0;
   const worker = async () => {
@@ -63,7 +63,7 @@ async function pool<T>(count: number, concurrency: number, fn: (i: number) => Pr
   return out;
 }
 
-async function retry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+export async function retry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     try {
@@ -253,6 +253,61 @@ export async function downloadObject(o: DownloadOptions): Promise<Downloaded> {
   return { data: decrypt(all, fileKey), name: m.name, mime: m.mime, encrypted, decrypted: true };
 }
 
+export interface DownloadedBlob {
+  blob: Blob;
+  name: string;
+  mime: string;
+  encrypted: boolean;
+  decrypted: boolean;
+}
+
+/**
+ * Like downloadObject, but for big files: chunks are fetched a window at a time, hashed and (for private files) decrypted as they arrive,
+ * so only the plaintext (as Blob parts the browser can spill to disk) is kept. The Merkle root is checked against the on-chain manifest
+ * before anything is returned.
+ */
+export async function downloadBlob(o: DownloadOptions): Promise<DownloadedBlob> {
+  const { node, provider, signer, progress } = o;
+  const rec = await node.manifest(o.root);
+  if (!rec) throw new Error("no manifest with that root is committed on chain");
+  const m: Manifest = { root: rec.root, size: rec.size, chunkSize: rec.chunk_size, mime: rec.mime, name: rec.name };
+  const encrypted = rec.encryption === ENCRYPTION_V1;
+  const decryptIt = encrypted && o.decrypt !== false;
+  let dec: StreamDecryptor | undefined;
+  if (decryptIt) {
+    const env = await envelopeFor(node, signer, rec);
+    if (!env) throw new Error("this object is encrypted and no key envelope for your account was found");
+    dec = new StreamDecryptor(openKey(hexToBytes(env), signer.priv, m.root, signer.key.address));
+  }
+  const pstatus = await provider.status();
+  const token = signReadToken(signer.priv, signer.key.pubHex, pstatus.address, m.root, Math.floor(Date.now() / 1000) + 1800);
+  const n = Math.ceil(m.size / m.chunkSize);
+  const leaves: Uint8Array[] = [];
+  const parts: BlobPart[] = [];
+  const window = 16;
+  let total = 0;
+  progress?.(`Downloading ${n} chunk(s)`, 0);
+  for (let base = 0; base < n; base += window) {
+    const count = Math.min(window, n - base);
+    const got = await pool(count, 4, (k) => retry(() => provider.getChunk(m.root, base + k, token), 3));
+    for (const chunk of got) {
+      leaves.push(hashLeaf(chunk));
+      total += chunk.length;
+      if (dec) parts.push(...(dec.push(chunk) as BlobPart[]));
+      else parts.push(chunk as BlobPart);
+    }
+    progress?.(`Downloading chunks (${Math.min(base + count, n)}/${n})`, Math.min(base + count, n) / n);
+  }
+  if (total !== m.size) throw new Error(`downloaded ${total} bytes, manifest says ${m.size}`);
+  progress?.("Verifying the Merkle root against the on-chain manifest");
+  if (contentRoot(treeRoot(leaves), m.size, m.chunkSize) !== m.root) throw new Error("content does not match manifest root");
+  if (dec) {
+    progress?.("Decrypting in your browser");
+    parts.push(...(dec.finish() as BlobPart[]));
+  }
+  return { blob: new Blob(parts), name: m.name, mime: m.mime, encrypted, decrypted: decryptIt };
+}
+
 export async function grantRead(
   node: NodeClient,
   signer: Signer,
@@ -287,6 +342,52 @@ export async function revokeRead(node: NodeClient, signer: Signer, rec: Manifest
   if (rec.owner !== signer.key.address) throw new Error("only the owner can revoke access");
   if (!opts.grantee && !opts.grantId) throw new Error("need a grantee or a grant id");
   return submitMsgs(node, signer, [{ type: "access/RevokeAccess", cid: rec.root, ...(opts.grantee ? { grantee: opts.grantee } : { grant_id: opts.grantId }) }], progress);
+}
+
+export interface ExtendResult {
+  dealId?: number;
+  dealTx: string;
+  /** True once a provider confirmed it holds the file under the new deal. */
+  active: boolean;
+}
+
+/**
+ * Pay for more storage time for a file the provider already holds, by opening one more deal for the same file ID (the chain has no "change the
+ * end date" message). The provider named on the earlier deal is asked again; it already has the chunks. The newest deal that ends last is what
+ * the library then judges the file by. Returns once the new deal is open (or after `waitMs` if the provider is slow to confirm).
+ */
+export async function extendStorage(o: {
+  node: NodeClient;
+  signer: Signer;
+  rec: ManifestRecord;
+  durationBlocks: number;
+  progress?: Progress;
+  waitMs?: number;
+  pollMs?: number;
+}): Promise<ExtendResult> {
+  const { node, signer, rec, progress } = o;
+  if (rec.owner !== signer.key.address) throw new Error("only the owner can extend storage");
+  const deals = await node.deals({ cid: rec.root });
+  const last = [...deals].sort((a, b) => b.id - a.id)[0];
+  const providerAddr = last?.replicas[0]?.provider ?? (await node.providers()).find((p) => p.status === "active" || !p.status)?.address;
+  if (!providerAddr) throw new Error("no storage provider is available to extend this file");
+  const before = new Set(deals.map((d) => d.id));
+  const tx = await submitMsgs(
+    node,
+    signer,
+    [{ type: "storage/OpenDeal", class: "market", cid: rec.root, size: rec.size, provider: providerAddr, duration_blocks: o.durationBlocks, denom: DENOM, replication: 1, min_replicas: 1 }],
+    progress,
+  );
+  const deadline = Date.now() + (o.waitMs ?? 60_000);
+  let fresh: Deal | undefined;
+  for (;;) {
+    fresh = (await node.deals({ cid: rec.root })).find((d) => !before.has(d.id));
+    if (fresh && fresh.status === "open" && fresh.replicas.some((r) => r.status === "active")) break;
+    if (Date.now() >= deadline) break;
+    progress?.("Waiting for the provider to confirm the new term");
+    await new Promise((r) => setTimeout(r, o.pollMs ?? 3000));
+  }
+  return { dealId: fresh?.id, dealTx: tx.hash, active: !!fresh && fresh.status === "open" && fresh.replicas.some((r) => r.status === "active") };
 }
 
 export type { Deal };

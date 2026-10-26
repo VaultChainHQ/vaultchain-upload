@@ -12,9 +12,10 @@ import { Qr } from "../Qr";
 import { Pill, type Tone } from "../ui";
 import { Term } from "../Term";
 import { FileActions } from "./Download";
+import { ExtendPanel } from "./ExtendPanel";
 import { SharePanel } from "./SharePanel";
 
-export function healthTone(level: "ok" | "warn" | "bad" | "idle"): Tone {
+export function healthTone(level: Tone): Tone {
   return level;
 }
 
@@ -37,6 +38,7 @@ export function FileRow({
   profile,
   unlocked,
   opened,
+  onChanged,
 }: {
   rec: ManifestRecord;
   deals: Deal[];
@@ -44,6 +46,7 @@ export function FileRow({
   profile: ProfileRecord;
   unlocked: Unlocked | null;
   opened?: boolean;
+  onChanged?: () => void;
 }) {
   const [open, setOpen] = useState(!!opened);
   const [qr, setQr] = useState(false);
@@ -107,6 +110,7 @@ export function FileRow({
             ) : (
               <p className="callout bad">No <Term k="deal">deal</Term> exists for this file, so nobody is paid to keep it.</p>
             )}
+            {rec.owner === profile.entry.address && deals.length ? <ExtendPanel rec={rec} unlocked={unlocked} onChanged={() => onChanged?.()} /> : null}
           </div>
           <p className="muted small">
             File ID <span className="mono">{short(rec.root, 12, 8)}</span> <CopyBtn text={rec.root} label="Copy" what="File ID" /> ·{" "}

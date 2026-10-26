@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:live": "vitest run test/live.test.ts",
-    "e2e": "node e2e/upload.mjs"
+    "e2e": "node e2e/upload.mjs",
+    "e2e:resume": "node e2e/resume.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
+    "fake-indexeddb": "^6.2.6",
     "jsqr": "^1.4.0",
     "typescript": "^5",
     "vitest": "^5.0.5"
